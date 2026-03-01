@@ -1978,6 +1978,9 @@ async function home(params) {
 
             // 获取封面图片（优先 data-src，其次 src）
             const vodPic = $item.find(".module-item-pic img").attr("data-src") || $item.find(".module-item-pic img").attr("src");
+            if (vodPic && !vodPic.startsWith("http://") && !vodPic.startsWith("https://")) {
+              vodPic = removeTrailingSlash(WEB_SITE) + vodPic;
+            }
 
             // 获取备注信息（更新状态）
             const vodRemarks = $item.find(".module-item-text").text().trim();
@@ -2100,6 +2103,10 @@ async function category(params) {
       const href = $item.find(".module-item-pic a").attr("href");
       const vodName = $item.find(".module-item-pic img").attr("alt");
       const vodPic = $item.find(".module-item-pic img").attr("data-src");
+      if (vodPic && !vodPic.startsWith("http://") && !vodPic.startsWith("https://")) {
+        vodPic = removeTrailingSlash(WEB_SITE) + vodPic;
+      }
+
       const vodRemarks = $item.find(".module-item-text").text();
       const vodYear = $item.find(".module-item-caption span").first().text();
 
@@ -2185,6 +2192,9 @@ async function detail(params) {
     // 获取基本信息
     const vodName = $(".page-title")[0]?.children?.[0]?.data || "";
     const vodPic = $($(".mobile-play")).find(".lazyload")[0]?.attribs?.["data-src"] || "";
+    if (vodPic && !vodPic.startsWith("http://") && !vodPic.startsWith("https://")) {
+      vodPic = removeTrailingSlash(WEB_SITE) + vodPic;
+    }
 
     // 获取详细信息
     let vodYear = "";
@@ -2464,6 +2474,10 @@ async function search(params) {
         const vodId = videoSerial.attribs.href || "";
         const vodName = videoSerial.attribs.title || "";
         const vodPic = vodPicImg?.attribs?.["data-src"] || "";
+        if (vodPic && !vodPic.startsWith("http://") && !vodPic.startsWith("https://")) {
+          vodPic = removeTrailingSlash(WEB_SITE) + vodPic;
+        }
+
         const vodRemarks = $($item.find(".video-serial")[0]).text() || "";
 
         if (vodId && vodName) {
