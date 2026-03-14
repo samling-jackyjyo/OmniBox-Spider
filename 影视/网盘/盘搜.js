@@ -1,7 +1,7 @@
 // @name 盘搜
 // @author 
 // @description 刮削：支持，弹幕：支持，嗅探：支持
-// @version 1.0.0
+// @version 1.0.1
 // @downloadURL https://gh-proxy.org/https://github.com/Silent1566/OmniBox-Spider/raw/refs/heads/main/影视/网盘/盘搜.js
 /**
  * OmniBox 网盘爬虫脚本
@@ -457,10 +457,10 @@ async function getAllVideoFiles(shareURL, files, pdirFid) {
  * @param {Object} params - 参数对象
  * @returns {Object} 首页数据
  */
-async function home(params) {
+async function home(params, context) {
   try {
     // 获取当前爬虫源ID（可选，用于日志记录等）
-    const sourceId = await OmniBox.getSourceId();
+    const sourceId = context.sourceId;
     if (sourceId) {
       OmniBox.log("info", `当前爬虫源ID: ${sourceId}`);
     }
@@ -935,7 +935,6 @@ async function detail(params) {
     // 执行刮削处理（使用通用API，videoId作为resourceId）
     let scrapingSuccess = false;
 
-    const sourceId = `spider_source_${await OmniBox.getSourceId()}_${shareURL}`;
     try {
       OmniBox.log("info", `开始执行刮削处理，关键词: ${keyword}, 资源名: ${note}, 视频文件数: ${allVideoFiles.length}`);
 
@@ -954,7 +953,7 @@ async function detail(params) {
       OmniBox.log("info", `文件ID格式转换完成，示例: ${videoFilesForScraping[0]?.fid || "N/A"}`);
 
       // 使用新的通用刮削API，videoId作为resourceId（网盘场景下，分享链接就是资源唯一标识）
-      const scrapingResult = await OmniBox.processScraping(sourceId, keyword, note, videoFilesForScraping);
+      const scrapingResult = await OmniBox.processScraping(shareURL, keyword, note, videoFilesForScraping);
       OmniBox.log("info", `刮削处理完成，结果: ${JSON.stringify(scrapingResult).substring(0, 200)}`);
       scrapingSuccess = true;
     } catch (error) {
@@ -969,9 +968,9 @@ async function detail(params) {
     let scrapeData = null;
     let videoMappings = [];
     try {
-      OmniBox.log("info", `开始获取元数据，resourceId: ${videoId}`);
+      OmniBox.log("info", `开始获取元数据，shareURL: ${shareURL}`);
       // 使用新的通用元数据API，videoId作为resourceId
-      const metadata = await OmniBox.getScrapeMetadata(sourceId);
+      const metadata = await OmniBox.getDriveMetadata(shareURL);
       OmniBox.log("info", `获取元数据响应: ${JSON.stringify(metadata).substring(0, 500)}`);
 
       scrapeData = metadata.scrapeData || null;
@@ -1286,9 +1285,8 @@ async function play(params) {
     let episodeNumber = null;
     let episodeName = params.episodeName || "";
     try {
-      const resourceId = `spider_source_${await OmniBox.getSourceId()}_${shareURL}`;
       // 使用新的通用元数据API，shareURL作为resourceId
-      const metadata = await OmniBox.getScrapeMetadata(resourceId);
+      const metadata = await OmniBox.getDriveMetadata(shareURL);
       if (metadata && metadata.scrapeData && metadata.videoMappings) {
         // 构建用于匹配映射关系的文件ID格式：{shareURL}|${fileId}
         // 注意：playId 的格式已经是 分享链接|文件ID，所以可以直接使用 playId 来匹配
@@ -1400,7 +1398,7 @@ async function play(params) {
 
     // 添加观看记录（如果不存在）
     try {
-      const sourceId = await OmniBox.getSourceId();
+      const sourceId = context.sourceId;
       if (sourceId) {
         // 构建vodId：使用shareURL作为视频唯一标识
         const vodId = params.vodId || shareURL;
