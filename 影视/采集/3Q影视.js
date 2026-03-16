@@ -2,7 +2,7 @@
 // @author W.Q, @wujiwanmei, @lucky_TJQ, tcxp, @shortai
 // @description 刮削：支持，弹幕：支持，嗅探：支持
 // @dependencies: axios, crypto
-// @version 1.0.0
+// @version 1.0.1
 // @downloadURL https://gh-proxy.org/https://github.com/Silent1566/OmniBox-Spider/raw/refs/heads/main/影视/采集/3Q影视.js
 
 /**
@@ -973,19 +973,25 @@ async function home(params) {
     try {
         // 请求首页获取分类数据
         const res = await apiGet(`${config.host}/api.php/web/index/home`);
-        
+        const list = [];
         // 提取分类列表
         const categories = res.data.data.categories || [];
         const classList = categories.map(i => ({ 
             type_id: i.type_name, 
             type_name: i.type_name 
         }));
+        categories.forEach(i => {
+            i.videos.forEach(k => {
+                list.push(k);
+            });
+        });
         
         logInfo(`分类获取完成，共 ${classList.length} 个`);
         
         return {
             class: classList,
-            filters: filterData  // 返回完整的筛选器配置
+            filters: filterData,
+            list
         };
     } catch (e) {
         logError('首页获取失败', e);
@@ -1403,7 +1409,7 @@ async function play(params) {
             header: PLAY_HEADERS
         };
 
-        // ========== 弹幕匹配 ==========
+        // ========== 弹幕匹配 ========== 
         if (DANMU_API && (vodName || params.vodName)) {
             const finalVodName = vodName || params.vodName;
             const finalEpisodeName = episodeName || params.episodeName || '';
