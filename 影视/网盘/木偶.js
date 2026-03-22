@@ -2,7 +2,7 @@
 // @author
 // @description 刮削：支持，弹幕：支持，嗅探：支持
 // @dependencies: axios, cheerio
-// @version 1.0.7
+// @version 1.1.0
 // @downloadURL https://gh-proxy.org/https://github.com/Silent1566/OmniBox-Spider/raw/refs/heads/main/影视/网盘/木偶.js
 
 // 引入 OmniBox SDK
@@ -1185,7 +1185,8 @@ async function play(params, context) {
       if (sourceId) {
         const title = params.title || scrapeTitle || shareURL;
         const pic = params.pic || scrapePic || "";
-        const added = await OmniBox.addPlayHistory({
+
+        OmniBox.addPlayHistory({
           vodId: videoId,
           title: title,
           pic: pic,
@@ -1193,13 +1194,17 @@ async function play(params, context) {
           sourceId: sourceId,
           episodeNumber: episodeNumber,
           episodeName: episodeName,
-        });
-
-        if (added) {
-          OmniBox.log("info", `已添加观看记录: ${title}`);
-        } else {
-          OmniBox.log("info", `观看记录已存在,跳过添加: ${title}`);
-        }
+        })
+          .then((added) => {
+            if (added) {
+              OmniBox.log("info", `已添加观看记录: ${title}`);
+            } else {
+              OmniBox.log("info", `观看记录已存在,跳过添加: ${title}`);
+            }
+          })
+          .catch((error) => {
+            OmniBox.log("warn", `添加观看记录失败: ${error.message}`);
+          });
       }
     } catch (error) {
       OmniBox.log("warn", `添加观看记录失败: ${error.message}`);
