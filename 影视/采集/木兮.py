@@ -1,32 +1,49 @@
 # -*- coding: utf-8 -*-
 # @name 木兮
 # @author 梦
-# @description 影视站：https://film.symx.club ，Python版，接入分类、搜索、详情与播放签名链路
-# @version 1.2.0
+# @description 影视站：https://film.symx.club ，Python版，接入首页、分类、搜索、详情与播放签名链路
+# @version 1.2.6
 # @downloadURL https://gh-proxy.org/https://github.com/Silent1566/OmniBox-Spider/raw/refs/heads/main/影视/采集/木兮.py
 # @dependencies cloudscraper,curl_cffi,Pillow,ddddocr,pycryptodome
 
+import asyncio
 import base64
 import hashlib
 import hmac
+import html
 import json
 import os
 import random
+import re
 import time
 import uuid
 from io import BytesIO
 from urllib.parse import urlencode, quote
 from spider_runner import OmniBox, run
 
+# ==================== 配置区域 ====================
+# 站点基础地址。默认使用木兮当前主站，可通过环境变量覆盖。
 HOST = os.environ.get("MUXI_HOST", "https://film.symx.club").rstrip("/")
+# 站点请求默认 User-Agent。必要时可通过环境变量替换为新的移动端 UA。
 UA = os.environ.get(
     "MUXI_UA",
     "Mozilla/5.0 (Linux; Android 13; 23049RAD8C Build/TQ3A.230901.001; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/124.0.6367.82 Mobile Safari/537.36",
 )
+# 验证链最大重试次数。主要给需要二次强制验证的搜索/播放场景使用。
+VERIFY_SOLVE_RETRIES = max(0, int(os.environ.get("MUXI_VERIFY_SOLVE_RETRIES", "1") or 1))
+# 两次验证重试之间的等待时间（毫秒）。
+VERIFY_SOLVE_RETRY_DELAY_MS = max(200, int(os.environ.get("MUXI_VERIFY_RETRY_DELAY_MS", "1000") or 1000))
+# 外部滑块识别接口地址。配置后优先走外部接口，失败再回退本地 ddddocr / Pillow 逻辑。
+EXTERNAL_SLIDE_API = str(os.environ.get("MUXI_DDDDOCR_API") or os.environ.get("MUXI_SLIDE_OCR_API") or os.environ.get("DDDDOCR_API") or "").strip()
+# 外部滑块识别接口路径。传基础地址时默认自动拼接 /slide。
+EXTERNAL_SLIDE_PATH = str(os.environ.get("MUXI_DDDDOCR_PATH") or os.environ.get("MUXI_SLIDE_OCR_PATH") or "/slide").strip() or "/slide"
+
+# 站点公共请求头。
 SITE_HEADERS = {
     "User-Agent": UA,
     "x-platform": "web",
 }
+# 站点分类 ID 到中文分类名的映射。
 TYPE_NAME_MAP = {
     1: "电视剧",
     2: "电影",
@@ -34,6 +51,7 @@ TYPE_NAME_MAP = {
     4: "动漫",
     5: "短剧",
 }
+# 首页分类列表。
 SITE_CLASS = [
     {"type_id": "1", "type_name": "电视剧"},
     {"type_id": "2", "type_name": "电影"},
@@ -41,6 +59,7 @@ SITE_CLASS = [
     {"type_id": "4", "type_name": "动漫"},
     {"type_id": "5", "type_name": "短剧"},
 ]
+# 分类筛选项定义。
 SITE_FILTERS = {
     "1": [
         {"key": "lang", "name": "语言", "value": [{"name": "全部", "value": ""}, {"name": "国语", "value": "国语"}, {"name": "英语", "value": "英语"}, {"name": "韩语", "value": "韩语"}, {"name": "日语", "value": "日语"}]},
@@ -68,6 +87,7 @@ SITE_FILTERS = {
         {"key": "by", "name": "排序", "value": [{"name": "更新时间", "value": "updateTime"}, {"name": "热度", "value": "hits"}, {"name": "评分", "value": "score"}]},
     ],
 }
+# 各分类默认筛选值。
 FILTER_DEF = {
     "1": {"lang": "", "by": "updateTime", "year": ""},
     "2": {"lang": "", "by": "updateTime", "year": ""},
@@ -75,15 +95,21 @@ FILTER_DEF = {
     "4": {"lang": "", "by": "updateTime", "year": ""},
     "5": {"lang": "", "by": "updateTime", "year": ""},
 }
-TTL_AUTH_MS = 10 * 60 * 1000
+# 鉴权 token 缓存时间（毫秒）。默认 7 天，优先复用缓存；调用失败后再强制刷新一次。
+TTL_AUTH_MS = 7 * 24 * 60 * 60 * 1000
+# 分类页缓存时间（毫秒）。
 TTL_CATEGORY_MS = 30 * 1000
+# 详情页缓存时间（毫秒）。
 TTL_DETAIL_MS = 2 * 60 * 1000
+# 搜索结果缓存时间（毫秒）。
 TTL_SEARCH_MS = 20 * 1000
+# 播放地址缓存时间（毫秒）。
 TTL_PLAY_MS = 15 * 1000
-VERIFY_SOLVE_RETRIES = max(0, int(os.environ.get("MUXI_VERIFY_SOLVE_RETRIES", "1") or 1))
-VERIFY_SOLVE_RETRY_DELAY_MS = max(200, int(os.environ.get("MUXI_VERIFY_RETRY_DELAY_MS", "1000") or 1000))
-EXTERNAL_SLIDE_API = str(os.environ.get("MUXI_DDDDOCR_API") or os.environ.get("MUXI_SLIDE_OCR_API") or os.environ.get("DDDDOCR_API") or "").strip()
-EXTERNAL_SLIDE_PATH = str(os.environ.get("MUXI_DDDDOCR_PATH") or os.environ.get("MUXI_SLIDE_OCR_PATH") or "/slide").strip() or "/slide"
+# 首页缓存时间（毫秒）。
+TTL_HOME_MS = 30 * 1000
+# 首页各分类默认抓取条数。
+HOME_CATEGORY_PAGE_SIZE = max(3, int(os.environ.get("MUXI_HOME_CATEGORY_PAGE_SIZE", "6") or 6))
+# ==================== 配置区域结束 ====================
 
 CACHE = {}
 AUTH_CACHE_KEY = 'muxi:auth-state'
@@ -519,7 +545,7 @@ async def load_auth_state_from_cache():
 
 
 async def persist_auth_state():
-    await set_sdk_cache(AUTH_CACHE_KEY, AUTH_STATE, 600)
+    await set_sdk_cache(AUTH_CACHE_KEY, AUTH_STATE, max(600, TTL_AUTH_MS // 1000))
 
 
 def normalize_gap_x(gap_x):
@@ -1025,6 +1051,25 @@ async def warm_play_context(film_id, line_id, referer):
     time.sleep(2.8)
 
 
+def clean_html_text(value):
+    text = html.unescape(str(value or ""))
+    text = text.replace("\xa0", " ")
+    text = re.sub(r"<br\s*/?>", "\n", text, flags=re.I)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"[ \t\r\f\v]+", " ", text)
+    text = re.sub(r"\n\s*\n+", "\n", text)
+    return text.strip()
+
+
+def join_text_parts(*parts):
+    out = []
+    for part in parts:
+        text = clean_html_text(part)
+        if text:
+            out.append(text)
+    return " / ".join(out)
+
+
 def to_vod_list(items):
     out = []
     for item in items if isinstance(items, list) else []:
@@ -1032,20 +1077,164 @@ def to_vod_list(items):
         vod_name = str(item.get("name") or "")
         if not vod_id or not vod_name:
             continue
+        area = str(item.get("area") or "")
+        language = str(item.get("language") or "")
         out.append({
             "vod_id": vod_id,
             "vod_name": vod_name,
             "vod_pic": str(item.get("cover") or ""),
             "vod_remarks": str(item.get("updateStatus") or ""),
-            "vod_content": str(item.get("blurb") or ""),
+            "vod_content": clean_html_text(item.get("blurb") or ""),
             "type_id": str(item.get("categoryId") or ""),
             "type_name": TYPE_NAME_MAP.get(item.get("categoryId"), ""),
+            "vod_year": str(item.get("year") or ""),
+            "vod_area": area,
+            "vod_lang": language,
+            "vod_director": clean_html_text(item.get("director") or ""),
+            "vod_actor": clean_html_text(item.get("actor") or ""),
+            "vod_douban_score": str(item.get("doubanScore") or ""),
+            "other": join_text_parts(area, language),
         })
     return out
 
 
+def dedupe_vod_list(items, limit=0):
+    out = []
+    seen = set()
+    for item in items if isinstance(items, list) else []:
+        if not isinstance(item, dict):
+            continue
+        vod_id = str(item.get("vod_id") or "").strip()
+        vod_name = str(item.get("vod_name") or "").strip()
+        key = vod_id or vod_name
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(item)
+        if limit and len(out) >= limit:
+            break
+    return out
+
+
+def map_home_poster_item(item):
+    if not isinstance(item, dict):
+        return {}
+    vod_id = str(item.get("filmId") or item.get("id") or "").strip()
+    vod_name = str(item.get("filmName") or item.get("name") or "").strip()
+    if not vod_id or not vod_name:
+        return {}
+    category_id = str(item.get("categoryId") or "").strip()
+    return {
+        "vod_id": vod_id,
+        "vod_name": vod_name,
+        "vod_pic": str(item.get("poster") or item.get("cover") or ""),
+        "vod_remarks": str(item.get("updateStatus") or "轮播推荐"),
+        "vod_content": clean_html_text(item.get("blurb") or ""),
+        "type_id": category_id,
+        "type_name": TYPE_NAME_MAP.get(int(category_id), "") if category_id.isdigit() else "",
+    }
+
+
+def is_success_json(json_obj):
+    return isinstance(json_obj, dict) and str(json_obj.get("code")) == "200"
+
+
+def has_nonempty_detail_fields(data):
+    if not isinstance(data, dict):
+        return False
+    keys = ("other", "director", "actor", "doubanScore", "year", "area", "language")
+    return any(str(data.get(key) or "").strip() for key in keys)
+
+
+def has_auth_state(require_verify=False):
+    basic = bool(AUTH_STATE.get("cookies") and AUTH_STATE.get("session") and AUTH_STATE.get("traceId") and AUTH_STATE.get("reportId"))
+    if not basic:
+        return False
+    if require_verify:
+        return bool(AUTH_STATE.get("verifyToken"))
+    return True
+
+
+async def request_json_with_auth_retry(url, referer=None, use_checksum_ts=False, validator=None, force_verify=False):
+    async def do_request(force_auth=False):
+        auth_ready = await init_auth(force_auth)
+        if not auth_ready:
+            return None
+        if force_verify:
+            token = await ensure_verify_token(force_auth)
+            if not token:
+                await log("warn", f"[木兮][request] verify token missing url={url}")
+        return await request_json(url, headers=build_signed_headers(url, referer, use_checksum_ts))
+
+    json_obj = await do_request(False)
+    ok = validator(json_obj) if callable(validator) else is_success_json(json_obj)
+    if ok:
+        return json_obj
+
+    await log("warn", f"[木兮][request] retry with refreshed auth url={url}")
+    return await do_request(True)
+
+
+async def fetch_home_data():
+    referer = f"{HOST}/index"
+    category_url = f"{HOST}/api/film/category"
+    poster_url = f"{HOST}/api/poster/list"
+
+    async def request_once(url):
+        return await request_json_with_auth_retry(
+            url,
+            referer=referer,
+            use_checksum_ts=True,
+            validator=lambda obj: is_success_json(obj) and isinstance(obj.get("data"), list),
+        )
+
+    poster_json, category_json = await asyncio.gather(
+        request_once(poster_url),
+        request_once(category_url),
+    )
+
+    poster_list = []
+    for item in ((poster_json or {}).get("data") or []):
+        mapped = map_home_poster_item(item)
+        if mapped:
+            poster_list.append(mapped)
+
+    classes = []
+    merged = list(poster_list)
+    category_groups = ((category_json or {}).get("data") or [])
+    for group in category_groups if isinstance(category_groups, list) else []:
+        type_id = str(group.get("categoryId") or "").strip()
+        type_name = str(group.get("categoryName") or TYPE_NAME_MAP.get(int(type_id), "") if type_id.isdigit() else "").strip()
+        if type_id and type_name:
+            classes.append({"type_id": type_id, "type_name": type_name})
+        merged.extend(to_vod_list(group.get("filmList") or []))
+
+    return {
+        "class": classes or SITE_CLASS,
+        "filters": SITE_FILTERS,
+        "list": dedupe_vod_list(merged),
+    }
+
+
 async def home(params, context):
-    return {"class": SITE_CLASS, "filters": SITE_FILTERS, "list": []}
+    try:
+        cache_key = "home"
+        cached = get_cache(cache_key, TTL_HOME_MS)
+        if cached is not None:
+            return cached
+
+        await init_auth()
+        result = await fetch_home_data()
+        if not result.get("list"):
+            refreshed = await init_auth(True)
+            if refreshed:
+                result = await fetch_home_data()
+
+        set_cache(cache_key, result)
+        return result
+    except Exception as e:
+        await log("error", f"[木兮][home] {e}")
+        return {"class": SITE_CLASS, "filters": SITE_FILTERS, "list": []}
 
 
 async def category(params, context):
@@ -1059,7 +1248,6 @@ async def category(params, context):
         if cached is not None:
             return cached
 
-        await init_auth()
         qs = urlencode({
             "categoryId": type_id,
             "language": str(filter_obj.get("lang") or ""),
@@ -1072,14 +1260,14 @@ async def category(params, context):
         referer = f"{HOST}/m/category?categoryId={quote(type_id)}"
 
         async def fetch_list():
-            json_obj = await request_json(url, headers={**SITE_HEADERS, **({"cookie": AUTH_STATE['cookies']} if AUTH_STATE['cookies'] else {}), "referer": referer})
+            json_obj = await request_json_with_auth_retry(
+                url,
+                referer=referer,
+                validator=lambda obj: is_success_json(obj) and isinstance((((obj or {}).get("data") or {}).get("list")), list),
+            )
             return to_vod_list((((json_obj or {}).get("data") or {}).get("list")) or [])
 
         list_data = await fetch_list()
-        if not list_data:
-            refreshed = await init_auth(True)
-            if refreshed:
-                list_data = await fetch_list()
 
         result = {
             "page": page,
@@ -1099,19 +1287,37 @@ async def detail(params, context):
         ids = [x.strip() for x in str(params.get("videoId") or params.get("id") or "").split(",") if x.strip()]
         if not ids:
             return {"list": []}
-        await init_auth()
         out = []
         for film_id in ids:
             cache_key = f"detail:{film_id}"
             item = get_cache(cache_key, TTL_DETAIL_MS)
             if item is None:
-                url = f"{HOST}/api/film/detail/play?filmId={quote(film_id)}"
-                json_obj = await request_json(url, headers=build_signed_headers(url, HOST, False))
-                data = (json_obj or {}).get("data")
+                detail_referer = f"{HOST}/detail/1/{quote(film_id)}"
+                detail_url = f"{HOST}/api/film/detail?id={quote(film_id)}"
+                play_url = f"{HOST}/api/film/detail/play?filmId={quote(film_id)}"
+
+                play_json = await request_json_with_auth_retry(
+                    play_url,
+                    referer=detail_referer,
+                    validator=lambda obj: is_success_json(obj) and isinstance(((obj or {}).get("data") or {}).get("playLineList"), list),
+                )
+                play_data = (play_json or {}).get("data") or {}
+
+                detail_data = {}
+                if has_auth_state():
+                    detail_json = await request_json(
+                        detail_url,
+                        headers=build_signed_headers(detail_url, detail_referer, False),
+                    )
+                    candidate_detail = (detail_json or {}).get("data") or {}
+                    if has_nonempty_detail_fields(candidate_detail):
+                        detail_data = candidate_detail
+                data = detail_data or play_data
                 if not data:
                     continue
+
                 sources = []
-                for line in data.get("playLineList") or []:
+                for line in play_data.get("playLineList") or detail_data.get("playLineList") or []:
                     episodes = []
                     for ep in line.get("lines") or []:
                         line_id = str(ep.get("id") or "").strip()
@@ -1120,20 +1326,37 @@ async def detail(params, context):
                         title = str(ep.get("name") or "播放").strip() or "播放"
                         episodes.append({
                             "name": title,
-                            "playId": f"{line_id}@{data.get('id')}@{data.get('categoryId')}",
+                            "playId": f"{line_id}@{data.get('id') or film_id}@{data.get('categoryId') or ''}",
                         })
                     if episodes:
                         sources.append({
                             "name": str(line.get("playerName") or "默认"),
                             "episodes": episodes,
                         })
+
+                area = str(data.get("area") or "")
+                language = str(data.get("language") or "")
+                director = clean_html_text(data.get("director") or "")
+                actor = clean_html_text(data.get("actor") or "")
+                other = str(data.get("other") or join_text_parts(area, language))
                 item = {
                     "vod_id": str(data.get("id") or film_id),
                     "vod_name": str(data.get("name") or ""),
-                    "type_name": TYPE_NAME_MAP.get(data.get("categoryId"), ""),
+                    "type_id": str(data.get("categoryId") or ""),
+                    "type_name": str(data.get("categoryName") or TYPE_NAME_MAP.get(data.get("categoryId"), "")),
                     "vod_pic": str(data.get("cover") or ""),
                     "vod_remarks": str(data.get("updateStatus") or ""),
-                    "vod_content": str(data.get("blurb") or ""),
+                    "vod_content": clean_html_text(data.get("blurb") or ""),
+                    "vod_year": str(data.get("year") or ""),
+                    "vod_area": area,
+                    "vod_lang": language,
+                    "vod_director": director,
+                    "vod_actor": actor,
+                    "vod_douban_score": str(data.get("doubanScore") or ""),
+                    "other": other,
+                    "director": director,
+                    "actor": actor,
+                    "doubanScore": str(data.get("doubanScore") or ""),
                     "vod_play_sources": sources,
                 }
                 set_cache(cache_key, item)
@@ -1155,10 +1378,6 @@ async def play(params, context):
         if cached is not None:
             return cached
 
-        auth_ready = await init_auth()
-        if not auth_ready:
-            return dict(EMPTY_PLAY)
-
         parts = raw_id.split("@")
         line_id = parts[0] if len(parts) > 0 else ""
         film_id = parts[1] if len(parts) > 1 else ""
@@ -1169,21 +1388,25 @@ async def play(params, context):
         referer = f"{HOST}/m/player?cid={quote(category_id)}&film_id={quote(film_id)}&line_id={quote(line_id)}"
         parse_url = f"{HOST}/api/line/play/parse?lineId={quote(line_id)}"
 
-        async def load_direct_play(force_verify=False):
-            token = await ensure_verify_token(force_verify)
-            await log("info", f"[木兮][play] verify force={force_verify} token={'yes' if token else 'no'} lineId={line_id}")
+        async def load_direct_play(force_auth=False):
+            token = await ensure_verify_token(force_auth)
+            await log("info", f"[木兮][play] verify forceAuth={force_auth} token={'yes' if token else 'no'} lineId={line_id}")
             if not token:
                 return ""
             await warm_play_context(film_id, line_id, referer)
-            json_obj = await request_json(parse_url, headers=build_signed_headers(parse_url, referer, True))
+            json_obj = await request_json_with_auth_retry(
+                parse_url,
+                referer=referer,
+                use_checksum_ts=True,
+                force_verify=True,
+                validator=lambda obj: is_success_json(obj) and str((obj or {}).get("data") or "").strip() != "",
+            )
             await log("info", f"[木兮][play] parse response code={(json_obj or {}).get('code')} message={(json_obj or {}).get('message')}")
             return str((json_obj or {}).get("data") or "").strip()
 
         play_url = await load_direct_play(False)
         if not play_url:
-            refreshed = await init_auth(True)
-            if refreshed:
-                play_url = await load_direct_play(True)
+            play_url = await load_direct_play(True)
         if not play_url:
             return dict(EMPTY_PLAY)
 
@@ -1215,19 +1438,25 @@ async def search(params, context):
         if cached is not None:
             return cached
 
-        await init_auth()
         url = f"{HOST}/api/film/search?keyword={quote(wd)}&pageNum={page}&pageSize=10"
         referer = f"{HOST}/m/search?keyword={quote(wd)}"
 
-        async def do_search(force_verify=False):
-            if force_verify:
-                await ensure_verify_token(True)
-            return await request_json(url, headers=build_signed_headers(url, referer, True))
-
-        json_obj = await do_search(False)
+        json_obj = await request_json_with_auth_retry(
+            url,
+            referer=referer,
+            use_checksum_ts=True,
+            force_verify=True,
+            validator=lambda obj: is_success_json(obj) and isinstance((((obj or {}).get("data") or {}).get("list")), list),
+        )
         if (json_obj or {}).get("code") == 1004 or (json_obj or {}).get("message") == "请先完成验证":
             await log("warn", f"[木兮][search] verify required keyword={wd}")
-            json_obj = await do_search(True)
+            json_obj = await request_json_with_auth_retry(
+                url,
+                referer=referer,
+                use_checksum_ts=True,
+                force_verify=True,
+                validator=lambda obj: is_success_json(obj) and isinstance((((obj or {}).get("data") or {}).get("list")), list),
+            )
 
         list_data = to_vod_list((((json_obj or {}).get("data") or {}).get("list")) or [])
         result = {
